@@ -1,0 +1,7 @@
+<dependencies>
+    <dependency>
+        <groupId>org.elasticsearch</groupId>
+        <artifactId>elasticsearch</artifactId>
+        <version>7.10.2</version>
+    </dependency>
+</dependencies>
