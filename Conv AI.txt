@@ -1,0 +1,371 @@
+# Conversational AI with MNPI Masking and Scoring System
+
+Based on your requirements, I'll design a comprehensive system that handles conversational AI with MNPI masking and scoring. Here's the implementation plan:
+
+## System Architecture
+
+### 1. Core Components
+
+```python
+import uuid
+from datetime import datetime
+import sqlite3
+from typing import List, Dict, Optional
+import openai  # Assuming OpenAI Python package is available
+
+class ConversationalSystem:
+    def __init__(self, db_path: str = "conversations.db"):
+        self.db_path = db_path
+        self._initialize_database()
+        
+    def _initialize_database(self):
+        """Initialize SQLite database with required schema"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    original_text TEXT,
+                    final_text TEXT,
+                    timestamp TEXT,
+                    question_count INTEGER,
+                    scores_json TEXT
+                )
+            """)
+            conn.commit()
+```
+
+### 2. Chat Initiation
+
+```python
+    def initiate_chat(self, user_id: str, system_prompt: str) -> Dict:
+        """Start a new conversation session"""
+        chat_id = str(uuid.uuid4())
+        
+        # Store initial conversation state (in-memory or DB)
+        conversation = {
+            "id": chat_id,
+            "user_id": user_id,
+            "system_prompt": system_prompt,
+            "questions": [],
+            "responses": [],
+            "current_question": 0,
+            "start_time": datetime.utcnow().isoformat()
+        }
+        
+        # Get first question based on system prompt
+        first_question = self._generate_question(system_prompt)
+        conversation["questions"].append(first_question)
+        
+        return {
+            "chat_id": chat_id,
+            "question": first_question,
+            "question_number": 1,
+            "total_questions": 10
+        }
+```
+
+### 3. Question Handling
+
+```python
+    def submit_question_response(self, chat_id: str, user_id: str, response: str) -> Dict:
+        """Process user response and return next question or completion"""
+        # In a real system, you'd retrieve the conversation state from DB
+        conversation = self._get_conversation_state(chat_id, user_id)
+        
+        if not conversation:
+            raise ValueError("Invalid chat ID or user ID")
+        
+        # Store the response
+        conversation["responses"].append(response)
+        
+        # Check if we've completed all questions
+        if len(conversation["responses"]) >= 10:
+            return self._finalize_chat(conversation)
+        
+        # Generate next question
+        next_question = self._generate_question(
+            conversation["system_prompt"],
+            previous_questions=conversation["questions"],
+            previous_responses=conversation["responses"]
+        )
+        
+        conversation["questions"].append(next_question)
+        conversation["current_question"] += 1
+        
+        # In a real system, you'd update the conversation state in DB
+        self._update_conversation_state(conversation)
+        
+        return {
+            "chat_id": chat_id,
+            "question": next_question,
+            "question_number": len(conversation["responses"]) + 1,
+            "total_questions": 10
+        }
+```
+
+### 4. MNPI Masking and Finalization
+
+```python
+    def _finalize_chat(self, conversation: Dict) -> Dict:
+        """Complete the conversation and apply MNPI masking"""
+        # Combine all Q&A into full text
+        full_text = self._construct_full_conversation_text(conversation)
+        
+        # Apply MNPI masking
+        masked_text = self._apply_mnpi_masking(full_text)
+        
+        # Store in database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO conversations 
+                (id, user_id, original_text, final_text, timestamp, question_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                conversation["id"],
+                conversation["user_id"],
+                full_text,
+                masked_text,
+                datetime.utcnow().isoformat(),
+                len(conversation["questions"])
+            ))
+            conn.commit()
+        
+        return {
+            "chat_id": conversation["id"],
+            "status": "completed",
+            "message": "Conversation finalized and stored"
+        }
+    
+    def _apply_mnpi_masking(self, text: str) -> str:
+        """Apply MNPI masking using custom rules and AI"""
+        # Step 1: Apply keyword-based masking
+        masked_text = self._apply_keyword_masking(text)
+        
+        # Step 2: Use AI for contextual masking
+        masked_text = self._apply_contextual_masking(masked_text)
+        
+        return masked_text
+    
+    def _apply_keyword_masking(self, text: str) -> str:
+        """Apply custom keyword-based masking"""
+        # Example implementation - replace with your actual MNPI keywords
+        mnpi_keywords = {
+            "revenue": "[MNPI_REDACTED]",
+            "acquisition": "[MNPI_REDACTED]",
+            "merger": "[MNPI_REDACTED]",
+            "earnings": "[MNPI_REDACTED]"
+        }
+        
+        for keyword, replacement in mnpi_keywords.items():
+            text = text.replace(keyword, replacement)
+        
+        return text
+    
+    def _apply_contextual_masking(self, text: str) -> str:
+        """Use AI to identify and mask contextually sensitive information"""
+        # Example using OpenAI (would need proper prompt engineering)
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Identify and redact any MNPI in the following text. Replace sensitive information with [MNPI_REDACTED]."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1
+        )
+        
+        return response.choices[0].message.content
+```
+
+### 5. Score Generation
+
+```python
+    def generate_scores(self, chat_id: str) -> Dict:
+        """Generate scores for a completed conversation"""
+        # Retrieve conversation from DB
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT final_text FROM conversations WHERE id = ?
+            """, (chat_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                raise ValueError("Chat not found")
+            
+            final_text = result[0]
+        
+        # Generate scores using AI
+        scores = self._generate_ai_scores(final_text)
+        
+        # Update database with scores
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE conversations SET scores_json = ? WHERE id = ?
+            """, (json.dumps(scores), chat_id))
+            conn.commit()
+        
+        return {
+            "chat_id": chat_id,
+            "scores": scores
+        }
+    
+    def _generate_ai_scores(self, text: str) -> Dict:
+        """Use AI to generate conversation scores"""
+        prompt = f"""
+        Analyze the following conversation and provide scores (1-10) for these dimensions:
+        - Empathy: How well does the responder show understanding and care?
+        - Sympathy: Does the responder express appropriate compassion?
+        - Clarity: Is the communication clear and understandable?
+        - Confidence: Does the responder sound confident in their answers?
+        - Risk: Are there any concerning elements in the responses?
+        
+        Return ONLY a JSON object with these scores and brief explanations.
+        
+        Conversation:
+        {text}
+        """
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a conversation analyst. Provide scores and brief explanations in JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+        
+        try:
+            return json.loads(response.choices[0].message.content)
+        except json.JSONDecodeError:
+            # Fallback if AI doesn't return proper JSON
+            return {
+                "empathy": 5,
+                "sympathy": 5,
+                "clarity": 5,
+                "confidence": 5,
+                "risk": 5,
+                "error": "Could not parse AI response"
+            }
+```
+
+### 6. Dashboard Data
+
+```python
+    def get_dashboard_data(self, filters: Dict = None) -> List[Dict]:
+        """Retrieve conversation data for dashboard with optional filters"""
+        if filters is None:
+            filters = {}
+        
+        query = "SELECT id, user_id, timestamp, question_count, scores_json FROM conversations"
+        params = []
+        
+        # Apply filters
+        conditions = []
+        if "user_id" in filters:
+            conditions.append("user_id = ?")
+            params.append(filters["user_id"])
+        if "start_date" in filters:
+            conditions.append("timestamp >= ?")
+            params.append(filters["start_date"])
+        if "end_date" in filters:
+            conditions.append("timestamp <= ?")
+            params.append(filters["end_date"])
+        if "region" in filters:  # Assuming region is stored (would need schema update)
+            conditions.append("region = ?")
+            params.append(filters["region"])
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY timestamp DESC"
+        
+        if "limit" in filters:
+            query += " LIMIT ?"
+            params.append(filters["limit"])
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            result = dict(row)
+            if result.get("scores_json"):
+                result["scores"] = json.loads(result["scores_json"])
+                del result["scores_json"]
+            results.append(result)
+        
+        return results
+```
+
+## API Endpoints
+
+Here's how the module breakdown would map to API endpoints:
+
+```python
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI()
+system = ConversationalSystem()
+
+@app.post("/initiate-chat")
+async def initiate_chat(user_id: str, system_prompt: str):
+    return system.initiate_chat(user_id, system_prompt)
+
+@app.post("/submit-question-response")
+async def submit_response(chat_id: str, user_id: str, response: str):
+    return system.submit_question_response(chat_id, user_id, response)
+
+@app.post("/finalize-chat")
+async def finalize_chat(chat_id: str, user_id: str):
+    # In a real implementation, this might be automatic after last question
+    return system._finalize_chat(system._get_conversation_state(chat_id, user_id))
+
+@app.get("/generate-scores/{chat_id}")
+async def get_scores(chat_id: str):
+    return system.generate_scores(chat_id)
+
+@app.get("/dashboard-data")
+async def dashboard_data(user_id: Optional[str] = None, 
+                        start_date: Optional[str] = None,
+                        end_date: Optional[str] = None,
+                        region: Optional[str] = None,
+                        limit: Optional[int] = 10):
+    filters = {}
+    if user_id: filters["user_id"] = user_id
+    if start_date: filters["start_date"] = start_date
+    if end_date: filters["end_date"] = end_date
+    if region: filters["region"] = region
+    if limit: filters["limit"] = limit
+    
+    return system.get_dashboard_data(filters)
+```
+
+## Implementation Notes
+
+1. **Database Schema**: The current schema supports core requirements but could be expanded with:
+   - Separate tables for questions/responses
+   - Region/country information
+   - User metadata
+
+2. **MNPI Masking**: The system implements a two-phase approach:
+   - Keyword-based masking first for efficiency
+   - Contextual AI masking for nuanced cases
+
+3. **Scoring**: The AI-generated scores provide qualitative metrics about conversations.
+
+4. **Scalability**: For production use, you'd want to:
+   - Add proper error handling
+   - Implement conversation state persistence
+   - Add rate limiting
+   - Include authentication/authorization
+
+5. **Testing**: Each component should be thoroughly tested, especially the MNPI masking logic.
+
+Would you like me to elaborate on any specific part of this implementation?
